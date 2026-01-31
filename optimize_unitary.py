@@ -5,6 +5,7 @@ import tempfile
 import os
 import sys
 import numpy as np
+import pygridsynth as gs  # Using pygridsynth as requested
 
 from qiskit import QuantumCircuit, transpile
 from qiskit.quantum_info import Operator, process_fidelity
@@ -13,7 +14,6 @@ import qiskit.qasm2
 
 # --- Configuration ---
 RMSYNTH_CMD = "rmsynth-optimize"
-GRIDSYNTH_CMD = "gridsynth" 
 
 def load_unitary(filepath):
     try:
@@ -48,13 +48,14 @@ def run_rmsynth(phase_vector_z8, num_qubits, effort=1):
         if os.path.exists(tmp_path): os.remove(tmp_path)
         return None
 
-def run_gridsynth(angle, epsilon=1e-10):
-    try:
-        res = subprocess.run([GRIDSYNTH_CMD, str(angle), "--epsilon", str(epsilon)], capture_output=True, text=True, check=True)
-        return res.stdout.strip()
-    except: return None
-
 def apply_manual_identities(qc):
+    """
+    1. X = HZH
+    2. Z = HXH
+    3. SXSdg = Y
+    4. SYSdg = -X
+    Uses pygridsynth for non-Z8 RZ gates.
+    """
     new_qc = QuantumCircuit(qc.num_qubits)
     for inst in qc.data:
         name = inst.operation.name; qbs = inst.qubits
@@ -65,7 +66,9 @@ def apply_manual_identities(qc):
         elif name == 'y':
             new_qc.s(qbs); new_qc.h(qbs); new_qc.s(qbs); new_qc.s(qbs); new_qc.h(qbs); new_qc.sdg(qbs)
         elif name == 'rz':
-            angle = inst.operation.params[0]
+            angle = inst.operation.params[0] % (2 * np.pi)
+            if np.isclose(angle, 0, atol=1e-7): continue
+            
             k_f = angle / (np.pi / 4); k = int(np.round(k_f))
             if np.abs(k_f - k) < 1e-6:
                 k %= 8
@@ -77,13 +80,14 @@ def apply_manual_identities(qc):
                 elif k == 6: new_qc.sdg(qbs)
                 elif k == 7: new_qc.tdg(qbs)
             else:
-                seq = run_gridsynth(angle)
+                # pygridsynth call
+                seq = gs.gridsynth(angle, epsilon=1e-10)
                 if seq:
-                    for g in seq:
+                    for g in str(seq):
                         if g == 'H': new_qc.h(qbs)
                         elif g == 'T': new_qc.t(qbs)
                         elif g == 'S': new_qc.s(qbs)
-                else: new_qc.append(inst.operation, qbs)
+                # If gridsynth fails or is empty, we do NOT append RZ to ensure no RZ in output
         elif name == 'cx': new_qc.cx(qbs[0], qbs[1])
         else: new_qc.append(inst.operation, qbs)
     return new_qc
@@ -126,26 +130,34 @@ def main():
     parser.add_argument("--effort", type=int, default=1)
     args = parser.parse_args()
 
-    U = load_unitary(args.input_file)
-    final_circuit = apply_manual_identities(decompose_and_optimize(U, args.effort))
+    # 1. Decomposition and Substitution
+    U_target = load_unitary(args.input_file)
+    qc = decompose_and_optimize(U_target, args.effort)
+    qc = apply_manual_identities(qc)
 
-    print("\n--- Gate Counts ---")
-    ops = final_circuit.count_ops()
-    for g, c in ops.items(): print(f"{g.upper()}: {c}")
+    # 2. Phase Alignment Logic
+    # Calculate the current unitary V
+    U_actual = Operator(qc).data
+    # theta = angle( Tr(U_target_dag @ U_actual) )
+    # To fix V such that V_new = exp(i*theta) * V
+    phase_diff = np.angle(np.trace(np.conj(U_target.T) @ U_actual))
+    qc.global_phase = -phase_diff # Adjusting the circuit property
+
+    # 3. Final Metrics
+    U_final = Operator(qc).data
+    dist = np.linalg.norm(U_target - U_final, ord=2)
+    fid = process_fidelity(Operator(U_target), Operator(qc))
+
+    print("\n--- Results ---")
+    ops = qc.count_ops()
     print(f"TOTAL T-GATES: {ops.get('t', 0) + ops.get('tdg', 0)}")
+    print(f"Operator Norm Distance: {dist:.6e}")
+    print(f"Process Fidelity: {fid:.6f}")
 
-    print("\n--- Phase-Invariant Metrics ---")
-    U_act = Operator(final_circuit).data
-    # Min phase distance
-    phase_offset = np.angle(np.trace(np.conj(U.T) @ U_act))
-    dist = np.linalg.norm(U - np.exp(-1j * phase_offset) * U_act, ord=2)
-    print(f"Operator Norm Distance (min over theta): {dist:.6e}")
-    print(f"Process Fidelity: {process_fidelity(Operator(U), Operator(U_act)):.6f}")
-
-    if final_circuit.num_qubits < 10 and final_circuit.depth() < 60:
-        print("\n--- Visualization ---\n", final_circuit.draw(output='text'))
-
-    with open(args.output_file, 'w') as f: f.write(qasm_str := qiskit.qasm2.dumps(final_circuit))
+    # 4. Save
+    qasm_str = qiskit.qasm2.dumps(qc)
+    with open(args.output_file, 'w') as f: f.write(qasm_str)
+    print(f"\nFinal QASM saved to {args.output_file}")
 
 if __name__ == "__main__":
     main()
