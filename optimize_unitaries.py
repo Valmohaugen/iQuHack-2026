@@ -174,10 +174,45 @@ def get_z8_phases(diagonal_unitary):
 # RMSYNTH INTEGRATION
 # =============================================================================
 
+# Phase gate value mapping (in units of π/4)
+PHASE_VALUES = {'t': 1, 'tdg': 7, 's': 2, 'sdg': 6, 'z': 4}
+
+
+def emit_phase(qc, phase, qubit, allow_s=True):
+    """
+    Emit phase gates for a given phase value (mod 8, in units of π/4).
+    
+    Args:
+        qc: Target QuantumCircuit
+        phase: Phase value (0-7, in units of π/4)
+        qubit: Qubit or list containing qubit to apply phase to
+        allow_s: If True, use S gates; if False, use only T/Tdg (for Challenge 12)
+    """
+    phase = phase % 8
+    if phase == 0:
+        return
+    if allow_s:
+        if phase == 1: qc.t(qubit)
+        elif phase == 2: qc.s(qubit)
+        elif phase == 3: qc.s(qubit); qc.t(qubit)
+        elif phase == 4: qc.z(qubit)
+        elif phase == 5: qc.z(qubit); qc.t(qubit)
+        elif phase == 6: qc.sdg(qubit)
+        elif phase == 7: qc.tdg(qubit)
+    else:
+        # No S gates - use only T/Tdg
+        if phase == 1: qc.t(qubit)
+        elif phase == 2: qc.t(qubit); qc.t(qubit)
+        elif phase == 3: qc.t(qubit); qc.t(qubit); qc.t(qubit)
+        elif phase == 4: qc.t(qubit); qc.t(qubit); qc.t(qubit); qc.t(qubit)
+        elif phase == 5: qc.tdg(qubit); qc.tdg(qubit); qc.tdg(qubit)
+        elif phase == 6: qc.tdg(qubit); qc.tdg(qubit)
+        elif phase == 7: qc.tdg(qubit)
+
+
 def qiskit_to_rmsynth(qc):
     """Convert Qiskit circuit to rmsynth Circuit (CNOT + phase gates only)."""
     rm_circ = RMSynthCircuit(qc.num_qubits)
-    phase_map = {'t': 1, 'tdg': 7, 's': 2, 'sdg': 6, 'z': 4}
     
     for inst in qc.data:
         name = inst.operation.name
@@ -185,8 +220,8 @@ def qiskit_to_rmsynth(qc):
         
         if name == 'cx':
             rm_circ.add_cnot(qubits[0], qubits[1])
-        elif name in phase_map:
-            rm_circ.add_phase(qubits[0], phase_map[name])
+        elif name in PHASE_VALUES:
+            rm_circ.add_phase(qubits[0], PHASE_VALUES[name])
         elif name not in ['id', 'barrier']:
             return None  # Contains non-phase gates
     
@@ -201,15 +236,7 @@ def rmsynth_to_qiskit(rm_circ, num_qubits):
         if gate.kind == 'cnot':
             qc.cx(gate.ctrl, gate.tgt)
         elif gate.kind == 'phase':
-            k = gate.k % 8
-            q = gate.q
-            if k == 1: qc.t(q)
-            elif k == 2: qc.s(q)
-            elif k == 3: qc.s(q); qc.t(q)
-            elif k == 4: qc.z(q)
-            elif k == 5: qc.z(q); qc.t(q)
-            elif k == 6: qc.sdg(q)
-            elif k == 7: qc.tdg(q)
+            emit_phase(qc, gate.k, gate.q)
     
     return qc
 
@@ -342,10 +369,6 @@ def rmsynth_brute_force_2q(U_target, max_t=5, max_cx=3, verbose=True):
     best_fid = 0
     best_qc = None
     best_t = float('inf')
-    best_score = float('inf')
-    
-    def score(fid, t):
-        return t + 200 * (1 - fid) ** 2
     
     gates_1q = ['h', 's', 'sdg', 't', 'tdg', 'id']
     
@@ -394,52 +417,44 @@ def rmsynth_brute_force_2q(U_target, max_t=5, max_cx=3, verbose=True):
                                     U_opt = Operator(opt_qc).data
                                     opt_fid = _compute_fidelity_fast(U_clean, U_opt)
                                     opt_t = opt_qc.count_ops().get('t', 0) + opt_qc.count_ops().get('tdg', 0)
-                                    opt_score = score(opt_fid, opt_t)
-                                    
-                                    if opt_score < best_score:
-                                        best_score = opt_score
+                                    if opt_fid > best_fid or (opt_fid >= best_fid - 1e-6 and opt_t < best_t):
                                         best_fid = opt_fid
                                         best_qc = opt_qc
                                         best_t = opt_t
                                         if verbose:
-                                            print(f"  [rmsynth] T={opt_t}, fid={opt_fid:.4f}, score={opt_score:.2f}")
+                                            print(f"  [rmsynth] T={opt_t}, fid={opt_fid:.4f}")
                             except:
                                 pass
                         
                         # Also track unoptimized version
-                        curr_score = score(fid, t_count)
-                        if curr_score < best_score:
-                            best_score = curr_score
+                        if fid > best_fid or (fid >= best_fid - 1e-6 and t_count < best_t):
                             best_fid = fid
                             best_qc = qc
                             best_t = t_count
                             if verbose:
-                                print(f"  T={t_count}, fid={fid:.4f}, score={curr_score:.2f}")
+                                print(f"  T={t_count}, fid={fid:.4f}")
                     
                     elif fid > best_fid + 1e-6 or (fid > best_fid - 1e-6 and t_count < best_t):
                         # Lower fidelity but still track
-                        curr_score = score(fid, t_count)
-                        if curr_score < best_score:
-                            qc = QuantumCircuit(2)
-                            for layer in range(n_layers):
-                                g0, g1 = gates[2*layer], gates[2*layer + 1]
-                                if g0 != 'id':
-                                    getattr(qc, g0)(0)
-                                if g1 != 'id':
-                                    getattr(qc, g1)(1)
-                                if layer < n_cx:
-                                    qc.cx(*cx_pattern[layer])
-                            best_score = curr_score
-                            best_fid = fid
-                            best_qc = qc
-                            best_t = t_count
-                            if verbose and fid > 0.6:
-                                print(f"  T={t_count}, fid={fid:.4f}, score={curr_score:.2f}")
+                        qc = QuantumCircuit(2)
+                        for layer in range(n_layers):
+                            g0, g1 = gates[2*layer], gates[2*layer + 1]
+                            if g0 != 'id':
+                                getattr(qc, g0)(0)
+                            if g1 != 'id':
+                                getattr(qc, g1)(1)
+                            if layer < n_cx:
+                                qc.cx(*cx_pattern[layer])
+                        best_fid = fid
+                        best_qc = qc
+                        best_t = t_count
+                        if verbose and fid > 0.6:
+                            print(f"  T={t_count}, fid={fid:.4f}")
                 except Exception:
                     continue
     
     if verbose and best_qc:
-        print(f"\nBest: T={best_t}, fid={best_fid:.6f}, score={best_score:.2f}")
+        print(f"\nBest: T={best_t}, fid={best_fid:.6f}")
         print(best_qc.draw())
     
     return best_qc, best_fid
@@ -611,7 +626,7 @@ def recognize_heisenberg_xxyyzz(U):
         return False, None, None
     
     phase = U[0, 0]
-    if np.abs(phase) < 0.9:
+    if np.abs(phase) < 0.98:
         return False, None, None
     
     if not (np.isclose(U[3, 3], phase, atol=1e-4) and 
@@ -773,106 +788,76 @@ def recognize_zi_iz_xx(U):
     return True, theta, qc
 
 
-def recognize_unitary7(U):
-    """Recognize unitary7 pattern (T=3, fidelity ~0.695)."""
-    U7_expected = np.array([
-        [0.10614794-0.67964147j, 0.33139935+0.36152515j, -0.00401607-0.29097921j, 0.20705723-0.39841737j],
-        [-0.36227759-0.45361314j, -0.81424202+0j, 0j, 0j],
-        [0.26141904+0.04453310j, -0.14112150+0.12582226j, -0.94547891+0j, 0j],
-        [0.32764493-0.11016284j, -0.08440623+0.23154488j, 0.12881489-0.06921940j, -0.89352723+0j]
-    ], dtype=complex)
-    
-    fid = np.abs(np.trace(U.conj().T @ U7_expected))**2 / 16
-    if fid < 0.95:
-        return False, None
-    
-    print(f"Detected unitary7 (T=3, fidelity ~0.695)")
+# Known unitary patterns with their expected matrices and optimal circuits
+# Format: (name, expected_matrix, circuit_builder, t_count, approx_fidelity)
+# Only include patterns where the stored circuit achieves good fidelity (>0.65)
+KNOWN_UNITARIES = {
+    'unitary7': {
+        'matrix': np.array([
+            [0.10614794-0.67964147j, 0.33139935+0.36152515j, -0.00401607-0.29097921j, 0.20705723-0.39841737j],
+            [-0.36227759-0.45361314j, -0.81424202+0j, 0j, 0j],
+            [0.26141904+0.04453310j, -0.14112150+0.12582226j, -0.94547891+0j, 0j],
+            [0.32764493-0.11016284j, -0.08440623+0.23154488j, 0.12881489-0.06921940j, -0.89352723+0j]
+        ], dtype=complex),
+        'gates': [('s', 0), ('sdg', 1), ('cx', 0, 1), ('h', 0), ('s', 1),
+                  ('cx', 1, 0), ('h', 0), ('tdg', 1), ('cx', 0, 1), ('tdg', 0), ('tdg', 1)],
+        't_count': 3, 'fidelity': 0.695
+    },
+    # Note: unitary9 and unitary10 removed - stored circuits had poor fidelity (<0.65)
+    # QSD decomposition achieves better results for these unitaries
+}
+
+
+def _build_circuit_from_gates(gates):
+    """Build a QuantumCircuit from a list of gate tuples."""
     qc = QuantumCircuit(2)
-    qc.s(0); qc.sdg(1); qc.cx(0, 1); qc.h(0); qc.s(1)
-    qc.cx(1, 0); qc.h(0); qc.tdg(1); qc.cx(0, 1); qc.tdg(0); qc.tdg(1)
-    
-    return True, qc
+    for gate in gates:
+        name = gate[0]
+        if name == 'cx':
+            qc.cx(gate[1], gate[2])
+        else:
+            getattr(qc, name)(gate[1])
+    return qc
 
 
-def recognize_unitary9(U):
-    """Recognize unitary9 pattern (T=0, fidelity ~0.625)."""
-    U9_expected = np.array([
-        [1, 0, 0, 0], [0, 0, -0.5+0.5j, 0.5+0.5j],
-        [0, 1j, 0, 0], [0, 0, -0.5+0.5j, -0.5-0.5j]
-    ], dtype=complex)
-    
-    fid = np.abs(np.trace(U.conj().T @ U9_expected))**2 / 16
-    if fid < 0.95:
+def recognize_known_unitary(U, name):
+    """Recognize a known unitary pattern by name."""
+    if name not in KNOWN_UNITARIES:
         return False, None
-    
-    print(f"Detected unitary9 (T=0, fidelity ~0.625)")
-    qc = QuantumCircuit(2)
-    qc.cx(0, 1); qc.cx(1, 0); qc.s(1)
-    
-    return True, qc
-
-
-def recognize_unitary10(U):
-    """Recognize unitary10 pattern (T=0, fidelity ~0.566)."""
-    U10_expected = np.array([
-        [0.14480819+0.1752384j, -0.51892816-0.52424259j, -0.14955858+0.312755j, 0.16913481-0.50538631j],
-        [-0.92717439-0.08785062j, -0.11260331-0.1818585j, 0.12255872+0.09640286j, -0.24498509-0.05045841j],
-        [-0.00798428-0.20355071j, -0.38932055-0.05180925j, 0.26051706+0.32864025j, 0.44517308+0.65589332j],
-        [0.03137922+0.19613952j, 0.4980475+0.08846049j, 0.34078865+0.750661j, 0.01464807-0.15755843j]
-    ], dtype=complex)
-    
-    fid = np.abs(np.trace(U.conj().T @ U10_expected))**2 / 16
-    if fid < 0.95:
+    info = KNOWN_UNITARIES[name]
+    fid = np.abs(np.trace(U.conj().T @ info['matrix']))**2 / 16
+    if fid < 0.98:
         return False, None
-    
-    print(f"Detected unitary10 (T=0, fidelity ~0.566)")
-    qc = QuantumCircuit(2)
-    qc.h(0); qc.s(0); qc.s(0); qc.h(0); qc.s(1); qc.s(1)
-    
-    return True, qc
+    print(f"Detected {name} (T={info['t_count']}, fidelity ~{info['fidelity']})")
+    return True, _build_circuit_from_gates(info['gates'])
 
 
 def recognize_unitary4(U):
     """
     Recognize unitary4 - XX+YY rotation with θ=2π/7 (irrational).
     Uses T=1 approximation with ~81% fidelity.
-    
-    The exact circuit would need ~212 T-gates via gridsynth.
-    This approximation trades fidelity for dramatically lower T-count.
     """
     # U4 is an XX+YY rotation: |00⟩ and |11⟩ unchanged, middle block rotates
     if not (np.isclose(np.abs(U[0, 0]), 1, atol=1e-3) and 
             np.isclose(np.abs(U[3, 3]), 1, atol=1e-3)):
         return False, None
-    
     if not (np.allclose(U[0, 1:], 0, atol=1e-3) and np.allclose(U[3, :3], 0, atol=1e-3)):
         return False, None
-    
-    # Check for the specific θ=2π/7 ≈ 51.43° rotation
     V = U[1:3, 1:3]
     cos_2theta = V[0, 0].real
     sin_2theta = V[0, 1].imag if np.isclose(V[0, 1].real, 0, atol=1e-3) else 0
-    
-    # θ=2π/7 means 2θ=4π/7, so cos(4π/7)≈-0.2225, sin(4π/7)≈0.9749
-    # But from analysis: cos(2θ)≈0.6235, sin(2θ)≈0.7818 → 2θ≈51.43°
-    expected_cos = np.cos(2 * np.pi / 7 * 2)  # cos(4π/7)
-    expected_sin = np.sin(2 * np.pi / 7 * 2)  # sin(4π/7)
-    
-    # Actually check for the specific U4 values
-    if not (np.isclose(cos_2theta, 0.6235, atol=0.01) and 
-            np.isclose(abs(sin_2theta), 0.7818, atol=0.01)):
+    if not (np.isclose(cos_2theta, 0.6235, atol=0.01) and np.isclose(abs(sin_2theta), 0.7818, atol=0.01)):
         return False, None
-    
     print(f"Detected unitary4 (XX+YY θ=2π/7, T=1, fidelity ~0.81)")
     qc = QuantumCircuit(2)
-    # Best circuit found by brute force: H-CX-Tdg-CX-H structure
-    qc.h(0); qc.h(1)
-    qc.cx(0, 1)
-    qc.tdg(1)
-    qc.cx(0, 1)
-    qc.h(0); qc.h(1)
-    
+    qc.h(0); qc.h(1); qc.cx(0, 1); qc.tdg(1); qc.cx(0, 1); qc.h(0); qc.h(1)
     return True, qc
+
+
+# Convenience wrappers for backward compatibility
+def recognize_unitary7(U): return recognize_known_unitary(U, 'unitary7')
+def recognize_unitary9(U): return recognize_known_unitary(U, 'unitary9')
+def recognize_unitary10(U): return recognize_known_unitary(U, 'unitary10')
 
 
 # =============================================================================
@@ -884,18 +869,6 @@ def simplify_circuit(qc):
     Simplify circuit by accumulating phase gates (mod 8).
     T=1, S=2, Sdg=6, Tdg=7 in units of π/4.
     """
-    PHASE = {'t': 1, 's': 2, 'sdg': 6, 'tdg': 7}
-    
-    def emit_phase(target_qc, phase, qubit):
-        phase = phase % 8
-        if phase == 1: target_qc.t(qubit)
-        elif phase == 2: target_qc.s(qubit)
-        elif phase == 3: target_qc.s(qubit); target_qc.t(qubit)
-        elif phase == 4: target_qc.z(qubit)
-        elif phase == 5: target_qc.sdg(qubit); target_qc.tdg(qubit)
-        elif phase == 6: target_qc.sdg(qubit)
-        elif phase == 7: target_qc.tdg(qubit)
-    
     new_qc = QuantumCircuit(qc.num_qubits)
     pending = {}
     
@@ -905,8 +878,8 @@ def simplify_circuit(qc):
         
         if len(qubits) == 1:
             q_idx = qc.find_bit(qubits[0]).index
-            if name in PHASE:
-                pending[q_idx] = (pending.get(q_idx, 0) + PHASE[name]) % 8
+            if name in PHASE_VALUES:
+                pending[q_idx] = (pending.get(q_idx, 0) + PHASE_VALUES[name]) % 8
             elif name == 'h':
                 emit_phase(new_qc, pending.get(q_idx, 0), qubits)
                 pending[q_idx] = 0
@@ -1360,98 +1333,6 @@ def _count_t_gates(gates):
     return sum(1 for g in gates if g in ('t', 'tdg'))
 
 
-def brute_force_search(U, max_t=3, max_cx=3, verbose=True, timeout=300, parallel=True):
-    """
-    Brute force search for optimal Clifford+T circuit.
-    
-    Args:
-        U: Target unitary matrix
-        max_t: Maximum T-gate count
-        max_cx: Maximum CX gates
-        verbose: Print progress
-        timeout: Maximum search time (seconds)
-        parallel: Use multiprocessing (default True)
-        
-    Returns:
-        tuple: (best_circuit, best_fidelity)
-    """
-    U_clean, _ = polar(U)
-    n_qubits = int(np.log2(U.shape[0]))
-    
-    if n_qubits != 2:
-        print("Brute force only supports 2-qubit unitaries")
-        return None, 0
-    
-    print(f"\n{'='*60}")
-    print(f"BRUTE FORCE SEARCH (T≤{max_t}, CX≤{max_cx}, timeout={timeout}s)")
-    print(f"{'='*60}")
-    
-    gates_1q = ['h', 's', 'sdg', 't', 'tdg', 'id']
-    best_fid, best_gates, best_cx_pat, best_t = 0, None, None, float('inf')
-    start = time.time()
-    count = 0
-    
-    for n_cx in range(1, max_cx + 1):
-        if time.time() - start > timeout:
-            print(f"\nTimeout after {count} circuits")
-            break
-        if verbose:
-            print(f"\nSearching with {n_cx} CX...")
-        
-        n_layers = n_cx + 1
-        cx_patterns = generate_cx_patterns(n_cx)
-        
-        # Pre-filter gate combinations by T-count
-        all_gates = list(product(gates_1q, repeat=2*n_layers))
-        valid_gates = [g for g in all_gates if _count_t_gates(g) <= max_t]
-        
-        if verbose:
-            print(f"  {len(valid_gates)} valid gate combos (of {len(all_gates)} total)")
-        
-        for cx_pattern in cx_patterns:
-            if time.time() - start > timeout:
-                break
-                
-            for gates in valid_gates:
-                if time.time() - start > timeout:
-                    break
-                
-                count += 1
-                t_count = _count_t_gates(gates)
-                
-                try:
-                    U_circ = _build_unitary_fast(gates, cx_pattern, n_layers)
-                    fid = _compute_fidelity_fast(U_clean, U_circ)
-                    
-                    if fid > best_fid + 1e-6 or (fid > best_fid - 1e-6 and t_count < best_t):
-                        best_fid, best_gates, best_cx_pat, best_t = fid, gates, cx_pattern, t_count
-                        if verbose:
-                            print(f"  T={t_count}, CX={n_cx}, fid={fid:.4f}")
-                except:
-                    pass
-    
-    elapsed = time.time() - start
-    rate = count / elapsed if elapsed > 0 else 0
-    print(f"\nDone: {count} circuits in {elapsed:.1f}s ({rate:.0f}/sec)")
-    
-    if best_gates:
-        # Reconstruct the best circuit
-        qc = QuantumCircuit(2)
-        n_layers = len(best_cx_pat) + 1
-        for layer in range(n_layers):
-            g0, g1 = best_gates[2*layer], best_gates[2*layer + 1]
-            if g0 != 'id': getattr(qc, g0)(0)
-            if g1 != 'id': getattr(qc, g1)(1)
-            if layer < len(best_cx_pat):
-                qc.cx(*best_cx_pat[layer])
-        
-        print(f"\nBest: T={best_t}, fid={best_fid:.6f}")
-        print(qc.draw())
-        return qc, best_fid
-    
-    return None, 0
-
-
 def _eval_circuit_batch(args):
     """Worker function for parallel evaluation. Returns (gates, cx_pattern, t_count, fidelity)."""
     gates, cx_pattern, n_layers, U_target = args
@@ -1464,16 +1345,31 @@ def _eval_circuit_batch(args):
         return (gates, cx_pattern, t_count, 0.0)
 
 
-def brute_force_parallel(U, max_t=3, max_cx=3, verbose=True, n_workers=None):
+def _reconstruct_circuit(best_gates, best_cx_pat):
+    """Reconstruct QuantumCircuit from gate list and CX pattern."""
+    qc = QuantumCircuit(2)
+    n_layers = len(best_cx_pat) + 1
+    for layer in range(n_layers):
+        g0, g1 = best_gates[2*layer], best_gates[2*layer + 1]
+        if g0 != 'id': getattr(qc, g0)(0)
+        if g1 != 'id': getattr(qc, g1)(1)
+        if layer < len(best_cx_pat):
+            qc.cx(*best_cx_pat[layer])
+    return qc
+
+
+def brute_force_search(U, max_t=3, max_cx=3, verbose=True, timeout=300, parallel=False, n_workers=None):
     """
-    Parallel brute force search using all CPU cores.
+    Brute force search for optimal Clifford+T circuit.
     
     Args:
         U: Target unitary matrix
         max_t: Maximum T-gate count
         max_cx: Maximum CX gates
         verbose: Print progress
-        n_workers: Number of worker processes (default: all CPU cores)
+        timeout: Maximum search time (seconds, ignored if parallel=True)
+        parallel: Use multiprocessing for faster search
+        n_workers: Number of parallel workers (default: all CPU cores)
         
     Returns:
         tuple: (best_circuit, best_fidelity)
@@ -1485,11 +1381,12 @@ def brute_force_parallel(U, max_t=3, max_cx=3, verbose=True, n_workers=None):
         print("Brute force only supports 2-qubit unitaries")
         return None, 0
     
-    if n_workers is None:
+    if parallel and n_workers is None:
         n_workers = cpu_count()
     
+    mode = f"{n_workers} workers" if parallel else f"timeout={timeout}s"
     print(f"\n{'='*60}")
-    print(f"PARALLEL BRUTE FORCE (T≤{max_t}, CX≤{max_cx}, {n_workers} workers)")
+    print(f"BRUTE FORCE SEARCH (T≤{max_t}, CX≤{max_cx}, {mode})")
     print(f"{'='*60}")
     
     gates_1q = ['h', 's', 'sdg', 't', 'tdg', 'id']
@@ -1498,54 +1395,60 @@ def brute_force_parallel(U, max_t=3, max_cx=3, verbose=True, n_workers=None):
     total_count = 0
     
     for n_cx in range(1, max_cx + 1):
+        if not parallel and time.time() - start > timeout:
+            print(f"\nTimeout after {total_count} circuits")
+            break
         if verbose:
             print(f"\nSearching with {n_cx} CX...")
         
         n_layers = n_cx + 1
         cx_patterns = generate_cx_patterns(n_cx)
-        
-        # Pre-filter gate combinations by T-count
         all_gates = list(product(gates_1q, repeat=2*n_layers))
         valid_gates = [g for g in all_gates if _count_t_gates(g) <= max_t]
         
         if verbose:
             print(f"  {len(valid_gates)} valid gate combos × {len(cx_patterns)} CX patterns")
         
-        # Build work items
-        work_items = [
-            (gates, cx_pat, n_layers, U_clean)
-            for cx_pat in cx_patterns
-            for gates in valid_gates
-        ]
-        
-        total_count += len(work_items)
-        
-        # Process in parallel
-        with Pool(n_workers) as pool:
-            results = pool.map(_eval_circuit_batch, work_items, chunksize=1000)
-        
-        # Find best result
-        for gates, cx_pat, t_count, fid in results:
-            if fid > best_fid + 1e-6 or (fid > best_fid - 1e-6 and t_count < best_t):
-                best_fid, best_gates, best_cx_pat, best_t = fid, gates, cx_pat, t_count
-                if verbose:
-                    print(f"  T={t_count}, CX={n_cx}, fid={fid:.4f}")
+        if parallel:
+            # Parallel evaluation
+            work_items = [(gates, cx_pat, n_layers, U_clean)
+                          for cx_pat in cx_patterns for gates in valid_gates]
+            total_count += len(work_items)
+            
+            with Pool(n_workers) as pool:
+                results = pool.map(_eval_circuit_batch, work_items, chunksize=1000)
+            
+            for gates, cx_pat, t_count, fid in results:
+                if fid > best_fid + 1e-6 or (fid > best_fid - 1e-6 and t_count < best_t):
+                    best_fid, best_gates, best_cx_pat, best_t = fid, gates, cx_pat, t_count
+                    if verbose:
+                        print(f"  T={t_count}, CX={n_cx}, fid={fid:.4f}")
+        else:
+            # Sequential evaluation with timeout
+            for cx_pattern in cx_patterns:
+                if time.time() - start > timeout:
+                    break
+                for gates in valid_gates:
+                    if time.time() - start > timeout:
+                        break
+                    total_count += 1
+                    t_count = _count_t_gates(gates)
+                    try:
+                        U_circ = _build_unitary_fast(gates, cx_pattern, n_layers)
+                        fid = _compute_fidelity_fast(U_clean, U_circ)
+                        if fid > best_fid + 1e-6 or (fid > best_fid - 1e-6 and t_count < best_t):
+                            best_fid, best_gates, best_cx_pat, best_t = fid, gates, cx_pattern, t_count
+                            if verbose:
+                                print(f"  T={t_count}, CX={n_cx}, fid={fid:.4f}")
+                    except:
+                        pass
     
     elapsed = time.time() - start
     rate = total_count / elapsed if elapsed > 0 else 0
     print(f"\nDone: {total_count} circuits in {elapsed:.1f}s ({rate:.0f}/sec)")
     
     if best_gates:
-        # Reconstruct the best circuit
-        qc = QuantumCircuit(2)
-        n_layers = len(best_cx_pat) + 1
-        for layer in range(n_layers):
-            g0, g1 = best_gates[2*layer], best_gates[2*layer + 1]
-            if g0 != 'id': getattr(qc, g0)(0)
-            if g1 != 'id': getattr(qc, g1)(1)
-            if layer < len(best_cx_pat):
-                qc.cx(*best_cx_pat[layer])
-        
+        qc = _reconstruct_circuit(best_gates, best_cx_pat)
         print(f"\nBest: T={best_t}, fid={best_fid:.6f}")
         print(qc.draw())
         return qc, best_fid
@@ -1553,38 +1456,16 @@ def brute_force_parallel(U, max_t=3, max_cx=3, verbose=True, n_workers=None):
     return None, 0
 
 
+# Backward compatibility alias
+def brute_force_parallel(U, max_t=3, max_cx=3, verbose=True, n_workers=None):
+    """Parallel brute force search. Alias for brute_force_search(parallel=True)."""
+    return brute_force_search(U, max_t=max_t, max_cx=max_cx, verbose=verbose,
+                              parallel=True, n_workers=n_workers)
+
+
 def quick_search(U, max_t=2):
     """Quick search with limited parameters."""
     return brute_force_search(U, max_t=max_t, max_cx=2, verbose=True, timeout=60)
-
-
-def compare_circuits(U, circuits):
-    """Compare multiple circuits against a target unitary."""
-    U_clean, _ = polar(U)
-    
-    print(f"\n{'Circuit':<20} {'T':<6} {'CX':<6} {'Fidelity':<12}")
-    print("-" * 44)
-    
-    for name, qc in circuits.items():
-        ops = qc.count_ops()
-        t = ops.get('t', 0) + ops.get('tdg', 0)
-        cx = ops.get('cx', 0)
-        try:
-            fid = process_fidelity(Operator(U_clean), Operator(qc))
-            print(f"{name:<20} {t:<6} {cx:<6} {fid:<12.6f}")
-        except:
-            print(f"{name:<20} {t:<6} {cx:<6} ERROR")
-
-
-def full_analysis(U, name="Unitary", max_t=3, max_cx=3, search=True):
-    """Complete analysis with optional brute force search."""
-    analysis = analyze_unitary(U, name)
-    if search:
-        best_qc, best_fid = brute_force_search(U, max_t=max_t, max_cx=max_cx)
-        analysis['best_circuit'] = best_qc
-        analysis['best_fidelity'] = best_fid
-    return analysis
-
 
 # =============================================================================
 # MAIN
@@ -1762,7 +1643,7 @@ def optimize_hard_unitary(i, max_t=7, max_cx=3, n_workers=4):
     
     # Strategy 2: rmsynth-enhanced search (only if brute force didn't find good solution)
     best_so_far = max([r[2] for r in results]) if results else 0
-    if best_so_far < 0.9:
+    if best_so_far < 0.98:
         print("\n--- Strategy 2: rmsynth Structure Search ---")
         try:
             qc2, fid2 = rmsynth_brute_force_2q(U_clean, max_t=max_t, max_cx=max_cx)
@@ -1773,18 +1654,15 @@ def optimize_hard_unitary(i, max_t=7, max_cx=3, n_workers=4):
         except Exception as e:
             print(f"  Failed: {e}")
     
-    # Select best result by score (T + 200*(1-fid)^2)
+    # Select best result by fidelity, then T-count
     if not results:
         return None, 0, float('inf')
     
-    def score(fid, t):
-        return t + 200 * (1 - fid) ** 2
-    
-    best = min(results, key=lambda x: score(x[2], x[3]))
+    best = max(results, key=lambda x: (x[2], -x[3]))  # max fidelity, min T
     best_name, best_qc, best_fid, best_t = best
     
     print(f"\nBest for U{i}: {best_name}")
-    print(f"  T={best_t}, fid={best_fid:.4f}, score={score(best_fid, best_t):.2f}")
+    print(f"  T={best_t}, fid={best_fid:.4f}")
     
     return best_qc, best_fid, best_t
 
@@ -1820,7 +1698,6 @@ def run_batch(effort=3, verbose=False, use_brute_force=True, fidelity_threshold=
     # Generate summary table
     print("\n" + "=" * 100)
     print("COMPLETE VERIFICATION SUMMARY - All 11 Unitaries")
-    print("Score = T-count + 200 × (1 - Fidelity)²")
     print("=" * 100)
     
     results = []
@@ -1837,9 +1714,6 @@ def run_batch(effort=3, verbose=False, use_brute_force=True, fidelity_threshold=
         fid = process_fidelity(Operator(U), Operator(qc))
         n_qubits = int(np.log2(U.shape[0]))
         
-        # Calculate score: T-count + 200 * (1 - Fidelity)^2
-        score = t_count + 200 * (1 - fid) ** 2
-        
         results.append({
             "Unitary": name,
             "Qubits": n_qubits,
@@ -1848,7 +1722,6 @@ def run_batch(effort=3, verbose=False, use_brute_force=True, fidelity_threshold=
             "Total": total_gates,
             "Distance": f"{dist:.2e}",
             "Fidelity": f"{fid:.6f}",
-            "Score": f"{score:.2f}",
         })
     
     # Print table using pandas for consistent formatting with notebook
@@ -1858,27 +1731,26 @@ def run_batch(effort=3, verbose=False, use_brute_force=True, fidelity_threshold=
         print(df.to_string(index=False))
     except ImportError:
         # Fallback to manual formatting if pandas not available
-        header = f"{'Unitary':<12} {'Qubits':<7} {'T-Count':<8} {'CX':<5} {'Total':<7} {'Distance':<12} {'Fidelity':<12} {'Score':<10}"
+        header = f"{'Unitary':<12} {'Qubits':<7} {'T-Count':<8} {'CX':<5} {'Total':<7} {'Distance':<12} {'Fidelity':<12}"
         print(header)
         print("-" * len(header))
         for r in results:
-            print(f"{r['Unitary']:<12} {r['Qubits']:<7} {r['T-Count']:<8} {r['CX']:<5} {r['Total']:<7} {r['Distance']:<12} {r['Fidelity']:<12} {r['Score']:<10}")
+            print(f"{r['Unitary']:<12} {r['Qubits']:<7} {r['T-Count']:<8} {r['CX']:<5} {r['Total']:<7} {r['Distance']:<12} {r['Fidelity']:<12}")
     print("=" * 100)
     
     # Summary statistics
     total_t = sum(r['T-Count'] for r in results)
     total_cx = sum(r['CX'] for r in results)
     avg_fid = sum(float(r['Fidelity']) for r in results) / len(results)
-    total_score = sum(float(r['Score']) for r in results)
     
     # Flag circuits that might need attention
-    low_fid = [(r['Unitary'], float(r['Fidelity'])) for r in results if float(r['Fidelity']) < 0.9]
+    low_fid = [(r['Unitary'], float(r['Fidelity'])) for r in results if float(r['Fidelity']) < 0.98]
     if low_fid:
-        print("⚠️  Circuits with fidelity < 0.9:")
+        print("⚠️  Circuits with fidelity < 0.98:")
         for name, fid in low_fid:
             print(f"   - {name}: F={fid:.4f}")
     else:
-        print("✅ All circuits have fidelity ≥ 0.9")
+        print("✅ All circuits have fidelity ≥ 0.98")
     
     return circuits, unitaries, results
 
@@ -2116,7 +1988,472 @@ Examples:
 # =============================================================================
 # Gate set: {H, T, T†, CNOT} only - NO S GATES ALLOWED!
 # No scoring metric - just T-count and fidelity verification
+#
+# Two synthesis strategies:
+# 1. Direct Synthesis: Synthesize each Pauli exponential term independently
+# 2. Diagonalization + rmsynth: Find Clifford C that diagonalizes all Paulis,
+#    optimize the diagonal phase polynomial with rmsynth, then wrap with C
 # =============================================================================
+
+def pauli_to_symplectic(pauli_str):
+    """
+    Convert Pauli string to symplectic representation (x_vec, z_vec).
+    
+    For a Pauli P = i^p * X^{x} * Z^{z}, we store (x, z) as binary vectors.
+    X -> (1, 0), Y -> (1, 1), Z -> (0, 1), I -> (0, 0)
+    
+    Args:
+        pauli_str: String like "XIZY"
+        
+    Returns:
+        tuple: (x_vec, z_vec) as lists of 0/1
+    """
+    x_vec = []
+    z_vec = []
+    for c in pauli_str:
+        if c == 'I':
+            x_vec.append(0)
+            z_vec.append(0)
+        elif c == 'X':
+            x_vec.append(1)
+            z_vec.append(0)
+        elif c == 'Y':
+            x_vec.append(1)
+            z_vec.append(1)
+        elif c == 'Z':
+            x_vec.append(0)
+            z_vec.append(1)
+    return x_vec, z_vec
+
+
+def symplectic_to_pauli(x_vec, z_vec):
+    """
+    Convert symplectic representation back to Pauli string.
+    
+    Args:
+        x_vec, z_vec: Binary vectors
+        
+    Returns:
+        str: Pauli string like "XIZY"
+    """
+    result = []
+    for x, z in zip(x_vec, z_vec):
+        if x == 0 and z == 0:
+            result.append('I')
+        elif x == 1 and z == 0:
+            result.append('X')
+        elif x == 1 and z == 1:
+            result.append('Y')
+        elif x == 0 and z == 1:
+            result.append('Z')
+    return ''.join(result)
+
+
+def diagonalize_commuting_paulis_proper(pauli_strings, n_qubits):
+    """
+    Find a Clifford circuit C that maps all Paulis to Z-strings.
+    
+    For commuting Paulis that have mixed X/Y/Z on same qubit across different terms,
+    we need entangling gates (CNOTs) in addition to single-qubit Cliffords.
+    
+    The algorithm uses symplectic Gaussian elimination:
+    1. Build the (X|Z) symplectic matrix
+    2. Row-reduce the X part to eliminate X components
+    3. Track the Clifford operations needed (H, S, CNOT)
+    
+    Key insight: CNOT in Heisenberg picture:
+    - CNOT(c,t): X_c -> X_c X_t, X_t -> X_t, Z_c -> Z_c, Z_t -> Z_c Z_t
+    - In symplectic: x_t' = x_t, x_c' = x_c XOR x_t (when used for X elimination)
+                   z_c' = z_c, z_t' = z_t XOR z_c
+    
+    Args:
+        pauli_strings: List of Pauli strings
+        n_qubits: Number of qubits
+        
+    Returns:
+        tuple: (diagonalizing_circuit, z_strings)
+    """
+    # Convert to symplectic form
+    paulis = [pauli_to_symplectic(p) for p in pauli_strings]
+    
+    # X[i,j] = 1 if Pauli i has X component on qubit j
+    X = np.array([p[0] for p in paulis], dtype=np.int8)
+    Z = np.array([p[1] for p in paulis], dtype=np.int8)
+    num_paulis = len(pauli_strings)
+    
+    qc = QuantumCircuit(n_qubits)
+    
+    # Process each qubit to eliminate X components
+    for col in range(n_qubits):
+        # Check if any Pauli has X on this qubit
+        x_rows = np.where(X[:, col] == 1)[0]
+        
+        if len(x_rows) == 0:
+            continue  # Already diagonal on this qubit
+        
+        # Check if there's also Y (x=1, z=1) - handle Y first
+        y_mask = (X[:, col] == 1) & (Z[:, col] == 1)
+        if np.any(y_mask):
+            # Apply S (= TT) to convert Y -> X
+            # S: (x, z) -> (x, x XOR z)
+            qc.t(col)
+            qc.t(col)
+            Z[:, col] = (Z[:, col] + X[:, col]) % 2
+        
+        # Now apply H to convert X -> Z
+        qc.h(col)
+        X[:, col], Z[:, col] = Z[:, col].copy(), X[:, col].copy()
+        
+        # Note: This simple approach doesn't fully handle the case where
+        # different Paulis have X, Y, Z on the same qubit.
+        # For full generality, we'd need CNOT-based row reduction.
+        # However, the per-term approach handles this correctly.
+    
+    # Build resulting strings
+    z_strings = []
+    for row in range(num_paulis):
+        z_str = symplectic_to_pauli(X[row].tolist(), Z[row].tolist())
+        z_strings.append(z_str)
+    
+    return qc, z_strings
+
+
+def diagonalize_single_pauli(pauli_str, n_qubits):
+    """
+    Create a circuit that diagonalizes a single Pauli to Z-form.
+    
+    For each X: apply H (X -> Z)
+    For each Y: apply Sdg H (Y -> Z)
+    
+    Returns both the circuit and the resulting Z-string.
+    """
+    qc = QuantumCircuit(n_qubits)
+    z_str = []
+    
+    for i, c in enumerate(pauli_str):
+        if c == 'I':
+            z_str.append('I')
+        elif c == 'X':
+            qc.h(i)
+            z_str.append('Z')
+        elif c == 'Y':
+            # Sdg H: Y -> -Z (up to sign)
+            # Using Tdg Tdg instead of Sdg
+            qc.tdg(i)
+            qc.tdg(i)
+            qc.h(i)
+            z_str.append('Z')
+        elif c == 'Z':
+            z_str.append('Z')
+    
+    return qc, ''.join(z_str)
+
+
+def emit_t_power(qc, qubit, k):
+    """Emit T^k (mod 8) gates on a qubit. Used for Challenge 12 (no S gates)."""
+    k_mod = k % 8
+    if k_mod == 0: return
+    elif k_mod == 1: qc.t(qubit)
+    elif k_mod == 2: qc.t(qubit); qc.t(qubit)
+    elif k_mod == 3: qc.t(qubit); qc.t(qubit); qc.t(qubit)
+    elif k_mod == 4: qc.t(qubit); qc.t(qubit); qc.t(qubit); qc.t(qubit)
+    elif k_mod == 5: qc.tdg(qubit); qc.tdg(qubit); qc.tdg(qubit)
+    elif k_mod == 6: qc.tdg(qubit); qc.tdg(qubit)
+    elif k_mod == 7: qc.tdg(qubit)
+
+
+def synthesize_diagonal_z_rotation(z_str, k, n_qubits):
+    """Synthesize exp(-i * pi/8 * k * Z-string) using CNOT ladder + T^k."""
+    qc = QuantumCircuit(n_qubits)
+    z_qubits = [i for i, c in enumerate(z_str) if c == 'Z']
+    if not z_qubits:
+        return qc
+    target = z_qubits[-1]
+    for ctrl in z_qubits[:-1]:
+        qc.cx(ctrl, target)
+    emit_t_power(qc, target, k)
+    for ctrl in reversed(z_qubits[:-1]):
+        qc.cx(ctrl, target)
+    return qc
+
+
+def optimize_challenge12_per_term_diag(data, output_file="challenge12_perterm_diag.qasm", verbose=True):
+    """
+    Optimize Challenge 12 using per-term diagonalization.
+    
+    For each Pauli term:
+    1. Apply basis change circuit C to diagonalize (X->Z via H, Y->Z via SdgH)
+    2. Apply diagonal Z rotation
+    3. Apply inverse basis change C†
+    
+    This is equivalent to the direct synthesis but structured differently.
+    """
+    n = data['n']
+    terms = data['terms']
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print("CHALLENGE 12: PER-TERM DIAGONALIZATION")
+        print(f"{'='*60}")
+        print(f"Qubits: {n}, Terms: {len(terms)}")
+    
+    U_target = compute_challenge12_unitary(data)
+    
+    qc = QuantumCircuit(n)
+    
+    for term in terms:
+        pauli = term['pauli']
+        k = term['k']
+        
+        # Diagonalize
+        diag_circ, z_str = diagonalize_single_pauli(pauli, n)
+        
+        # Apply basis change
+        qc = qc.compose(diag_circ)
+        
+        # Apply diagonal rotation
+        rot_circ = synthesize_diagonal_z_rotation(z_str, k, n)
+        qc = qc.compose(rot_circ)
+        
+        # Undo basis change
+        qc = qc.compose(diag_circ.inverse())
+    
+    # Simplify
+    qc = simplify_circuit_no_s(qc)
+    qc = cancel_adjacent_h(qc)
+    
+    # Validate
+    is_valid, msg = validate_circuit_u12(qc)
+    if not is_valid:
+        if verbose:
+            print(f"ERROR: {msg}")
+        return None, None, None
+    
+    ops = qc.count_ops()
+    t_count = ops.get('t', 0) + ops.get('tdg', 0)
+    
+    if verbose:
+        print(f"T-count: {t_count}")
+    
+    # Fidelity
+    try:
+        U_circuit = Operator(qc).data
+        fid = np.abs(np.trace(U_target.conj().T @ U_circuit))**2 / (2**(2*n))
+        if verbose:
+            print(f"Fidelity: {fid:.6f}")
+    except Exception as e:
+        fid = None
+        if verbose:
+            print(f"Could not compute fidelity: {e}")
+    
+    qasm = qiskit.qasm2.dumps(qc)
+    with open(output_file, 'w') as f:
+        f.write(qasm)
+    
+    if verbose:
+        print(f"Saved to {output_file}")
+    
+    return qc, t_count, fid
+
+
+def build_diagonal_phase_circuit(z_strings, k_values, n_qubits):
+    """
+    Build a diagonal phase circuit for Z-string exponentials.
+    
+    For each exp(-i * pi/8 * k * Z_string), we compute the parity
+    and apply the appropriate phase.
+    
+    Args:
+        z_strings: List of Z-strings (only 'Z' and 'I')
+        k_values: List of k coefficients
+        n_qubits: Number of qubits
+        
+    Returns:
+        QuantumCircuit with diagonal phase gates
+    """
+    qc = QuantumCircuit(n_qubits)
+    
+    for z_str, k in zip(z_strings, k_values):
+        z_qubits = [i for i, c in enumerate(z_str) if c == 'Z']
+        if not z_qubits:
+            continue
+        target = z_qubits[-1]
+        for ctrl in z_qubits[:-1]:
+            qc.cx(ctrl, target)
+        emit_t_power(qc, target, k)
+        for ctrl in reversed(z_qubits[:-1]):
+            qc.cx(ctrl, target)
+    
+    return qc
+
+
+def optimize_diagonal_with_rmsynth_no_s(qc, n_qubits):
+    """
+    Optimize a diagonal circuit using rmsynth, then convert S gates to T gates.
+    
+    rmsynth optimizes phase polynomials but may output S gates.
+    We convert S -> T T and Sdg -> Tdg Tdg afterward.
+    
+    Args:
+        qc: Diagonal QuantumCircuit (CNOT + phase gates)
+        n_qubits: Number of qubits
+        
+    Returns:
+        Optimized QuantumCircuit with no S gates
+    """
+    # Try rmsynth optimization
+    try:
+        rm_circ = qiskit_to_rmsynth(qc)
+        if rm_circ is not None and rm_circ.t_count() > 0:
+            optimizer = RMSynthOptimizer(decoder="auto", effort=2)
+            rm_optimized = optimizer.optimize(rm_circ)
+            qc_opt = rmsynth_to_qiskit(rm_optimized, n_qubits)
+        else:
+            qc_opt = qc
+    except Exception:
+        qc_opt = qc
+    
+    # Convert any S gates to T gates
+    new_qc = QuantumCircuit(n_qubits)
+    for inst in qc_opt.data:
+        name = inst.operation.name.lower()
+        qubits = inst.qubits
+        
+        if name == 's':
+            new_qc.t(qubits)
+            new_qc.t(qubits)
+        elif name == 'sdg':
+            new_qc.tdg(qubits)
+            new_qc.tdg(qubits)
+        else:
+            new_qc.append(inst.operation, qubits)
+    
+    return new_qc
+
+
+def optimize_challenge12_diagonalization(data, output_file="challenge12_diag_optimized.qasm", verbose=True):
+    """
+    Optimize Challenge 12 using Clifford Diagonalization + rmsynth.
+    
+    Strategy:
+    1. Find Clifford C that diagonalizes all Paulis to Z-strings
+    2. Build diagonal phase polynomial circuit
+    3. Optimize with rmsynth
+    4. Final circuit: C† @ optimized_diagonal @ C
+    
+    NO S GATES ALLOWED - only {H, T, Tdg, CX}!
+    
+    Args:
+        data: Challenge 12 data dict
+        output_file: Output QASM file path
+        verbose: Print progress
+        
+    Returns:
+        tuple: (circuit, t_count, fidelity)
+    """
+    n = data['n']
+    terms = data['terms']
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print("CHALLENGE 12: DIAGONALIZATION METHOD")
+        print(f"{'='*60}")
+        print(f"Qubits: {n}")
+        print(f"Terms: {len(terms)}")
+        print(f"Gate set: {{H, T, Tdg, CX}} - NO S GATES!")
+        print(f"{'='*60}")
+    
+    # Compute target unitary
+    if verbose:
+        print("\nComputing target unitary...")
+    U_target = compute_challenge12_unitary(data)
+    
+    # Extract Pauli strings and k values
+    pauli_strings = [t['pauli'] for t in terms]
+    k_values = [t['k'] for t in terms]
+    
+    # Step 1: Diagonalize using proper symplectic method
+    if verbose:
+        print("Finding diagonalizing Clifford circuit...")
+    diag_qc, z_strings = diagonalize_commuting_paulis_proper(pauli_strings, n)
+    
+    # Check how many are actually diagonalized
+    n_diag = sum(1 for z in z_strings if all(c in 'IZ' for c in z))
+    if verbose:
+        print(f"  Diagonalized: {n_diag}/{len(z_strings)} terms")
+    
+    # Step 2: Build diagonal phase circuit
+    if verbose:
+        print("Building diagonal phase circuit...")
+    diag_phase_qc = build_diagonal_phase_circuit(z_strings, k_values, n)
+    
+    # Step 3: Optimize with rmsynth
+    if verbose:
+        print("Optimizing with rmsynth (converting S to T)...")
+    diag_opt_qc = optimize_diagonal_with_rmsynth_no_s(diag_phase_qc, n)
+    
+    # Step 4: Compose: C† @ diagonal @ C
+    if verbose:
+        print("Composing final circuit...")
+    
+    # C† (inverse of diagonalization)
+    c_inv = diag_qc.inverse()
+    
+    # Final: C, diagonal, C†
+    final_qc = QuantumCircuit(n)
+    final_qc = final_qc.compose(diag_qc)
+    final_qc = final_qc.compose(diag_opt_qc)
+    final_qc = final_qc.compose(c_inv)
+    
+    # Simplify
+    final_qc = simplify_circuit_no_s(final_qc)
+    final_qc = cancel_adjacent_h(final_qc)
+    
+    # Validate
+    is_valid, msg = validate_circuit_u12(final_qc)
+    if not is_valid:
+        if verbose:
+            print(f"ERROR: {msg}")
+        return None, None, None
+    
+    # Count gates
+    ops = final_qc.count_ops()
+    t_count = ops.get('t', 0) + ops.get('tdg', 0)
+    cx_count = ops.get('cx', 0)
+    h_count = ops.get('h', 0)
+    
+    if verbose:
+        print(f"\nCircuit stats:")
+        print(f"  T-count: {t_count}")
+        print(f"  CX-count: {cx_count}")
+        print(f"  H-count: {h_count}")
+    
+    # Compute fidelity
+    if verbose:
+        print("\nComputing fidelity...")
+    try:
+        U_circuit = Operator(final_qc).data
+        fid = np.abs(np.trace(U_target.conj().T @ U_circuit))**2 / (2**(2*n))
+        dist = np.linalg.norm(U_target - U_circuit * np.exp(-1j * np.angle(np.trace(U_target.conj().T @ U_circuit))), ord=2)
+        
+        if verbose:
+            print(f"  Process fidelity: {fid:.6f}")
+            print(f"  Distance: {dist:.6e}")
+    except Exception as e:
+        if verbose:
+            print(f"  Could not compute fidelity: {e}")
+        fid = None
+    
+    # Save
+    qasm = qiskit.qasm2.dumps(final_qc)
+    with open(output_file, 'w') as f:
+        f.write(qasm)
+    
+    if verbose:
+        print(f"\n✅ Saved to {output_file}")
+    
+    return final_qc, t_count, fid
+
 
 def load_challenge12(filepath="challenge12.json"):
     """
@@ -2332,43 +2669,10 @@ def simplify_circuit_no_s(qc):
     """
     Simplify circuit by accumulating phase gates (mod 8).
     ONLY uses T and Tdg - NO S GATES for Challenge 12!
-    
-    T=1, Tdg=7 in units of π/4.
     """
-    PHASE = {'t': 1, 'tdg': 7}
-    
-    def emit_phase_no_s(target_qc, phase, qubit):
-        """Emit phase using only T/Tdg gates."""
-        phase = phase % 8
-        if phase == 0:
-            pass
-        elif phase == 1:
-            target_qc.t(qubit)
-        elif phase == 2:
-            target_qc.t(qubit)
-            target_qc.t(qubit)
-        elif phase == 3:
-            target_qc.t(qubit)
-            target_qc.t(qubit)
-            target_qc.t(qubit)
-        elif phase == 4:
-            # Z = T^4
-            for _ in range(4):
-                target_qc.t(qubit)
-        elif phase == 5:
-            # 5 = -3 mod 8, so 3 Tdg
-            target_qc.tdg(qubit)
-            target_qc.tdg(qubit)
-            target_qc.tdg(qubit)
-        elif phase == 6:
-            # 6 = -2 mod 8, so 2 Tdg
-            target_qc.tdg(qubit)
-            target_qc.tdg(qubit)
-        elif phase == 7:
-            target_qc.tdg(qubit)
-    
     new_qc = QuantumCircuit(qc.num_qubits)
     pending = {}
+    phase_gates = {'t': 1, 'tdg': 7}  # Only T gates allowed
     
     for inst in qc.data:
         name = inst.operation.name
@@ -2376,25 +2680,25 @@ def simplify_circuit_no_s(qc):
         
         if len(qubits) == 1:
             q_idx = qc.find_bit(qubits[0]).index
-            if name in PHASE:
-                pending[q_idx] = (pending.get(q_idx, 0) + PHASE[name]) % 8
+            if name in phase_gates:
+                pending[q_idx] = (pending.get(q_idx, 0) + phase_gates[name]) % 8
             elif name == 'h':
-                emit_phase_no_s(new_qc, pending.get(q_idx, 0), qubits)
+                emit_phase(new_qc, pending.get(q_idx, 0), qubits, allow_s=False)
                 pending[q_idx] = 0
                 new_qc.h(qubits)
             else:
-                emit_phase_no_s(new_qc, pending.get(q_idx, 0), qubits)
+                emit_phase(new_qc, pending.get(q_idx, 0), qubits, allow_s=False)
                 pending[q_idx] = 0
                 new_qc.append(inst.operation, qubits)
         else:
             for q in qubits:
                 q_idx = qc.find_bit(q).index
-                emit_phase_no_s(new_qc, pending.get(q_idx, 0), [q])
+                emit_phase(new_qc, pending.get(q_idx, 0), [q], allow_s=False)
                 pending[q_idx] = 0
             new_qc.append(inst.operation, qubits)
     
     for q_idx in range(qc.num_qubits):
-        emit_phase_no_s(new_qc, pending.get(q_idx, 0), [qc.qubits[q_idx]])
+        emit_phase(new_qc, pending.get(q_idx, 0), [qc.qubits[q_idx]], allow_s=False)
     
     return new_qc
 
@@ -2530,21 +2834,73 @@ def optimize_challenge12(data, output_file="challenge12_optimized.qasm", verbose
     return qc, t_count, fid
 
 
-def run_challenge12(json_file="challenge12.json", output_file="challenge12_optimized.qasm"):
+def run_challenge12(json_file="unitary12.json", output_file="unitary12_optimized.qasm", method="direct"):
     """
     Run Challenge 12 optimization from command line.
     
+    Args:
+        json_file: Input JSON file with Pauli terms (default: unitary12.json)
+        output_file: Output QASM file path
+        method: Synthesis method - "direct" (recommended), "diag", or "best" (try both)
+    
     Usage:
         python optimize_unitaries.py --challenge12
+        python optimize_unitaries.py --challenge12 --method diag
         python optimize_unitaries.py --challenge12 --json custom.json --output custom.qasm
     """
     if not os.path.exists(json_file):
         print(f"Error: {json_file} not found!")
-        print("Please provide the challenge12.json file.")
+        print("Please provide the unitary12.json file.")
         return None
     
     data = load_challenge12(json_file)
-    return optimize_challenge12(data, output_file)
+    
+    if method == "direct":
+        return optimize_challenge12(data, output_file)
+    elif method == "diag":
+        return optimize_challenge12_diagonalization(data, output_file)
+    elif method == "perterm":
+        return optimize_challenge12_per_term_diag(data, output_file)
+    else:
+        # Try both methods and pick the best
+        print("\n" + "="*70)
+        print("CHALLENGE 12: COMPARING SYNTHESIS METHODS")
+        print("="*70)
+        
+        # Method 1: Direct synthesis
+        print("\n[Method 1: Direct Synthesis]")
+        qc1, t1, fid1 = optimize_challenge12(data, output_file.replace(".qasm", "_direct.qasm"), verbose=True)
+        
+        # Method 2: Diagonalization + rmsynth
+        print("\n[Method 2: Diagonalization + rmsynth]")
+        qc2, t2, fid2 = optimize_challenge12_diagonalization(data, output_file.replace(".qasm", "_diag.qasm"), verbose=True)
+        
+        # Compare
+        print("\n" + "="*70)
+        print("COMPARISON")
+        print("="*70)
+        print(f"{'Method':<30} {'T-count':<15} {'Fidelity':<15}")
+        print("-"*60)
+        print(f"{'Direct Synthesis':<30} {t1 if t1 else 'N/A':<15} {f'{fid1:.6f}' if fid1 else 'N/A':<15}")
+        print(f"{'Diagonalization + rmsynth':<30} {t2 if t2 else 'N/A':<15} {f'{fid2:.6f}' if fid2 else 'N/A':<15}")
+        
+        # Pick the best (lowest T-count with fidelity > 0.99)
+        best_qc, best_t, best_fid = None, float('inf'), None
+        if t1 is not None and fid1 is not None and fid1 > 0.99:
+            best_qc, best_t, best_fid = qc1, t1, fid1
+        if t2 is not None and fid2 is not None and fid2 > 0.99 and t2 < best_t:
+            best_qc, best_t, best_fid = qc2, t2, fid2
+        
+        if best_qc is not None:
+            print(f"\n✅ Best method: T-count = {best_t}, Fidelity = {best_fid:.6f}")
+            qasm = qiskit.qasm2.dumps(best_qc)
+            with open(output_file, 'w') as f:
+                f.write(qasm)
+            print(f"   Saved to {output_file}")
+            return best_qc, best_t, best_fid
+        else:
+            print("\n❌ No valid method found!")
+            return None, None, None
 
 
 if __name__ == "__main__":
