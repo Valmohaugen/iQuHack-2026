@@ -39,6 +39,7 @@ import os
 import sys
 import time
 import numpy as np
+import matplotlib as mpl
 from itertools import product
 from scipy.linalg import polar, logm
 from multiprocessing import Pool, cpu_count
@@ -952,7 +953,7 @@ def optimize_circuit(qc):
     return qc
 
 
-def apply_manual_identities(qc, epsilon=1e-10):
+def apply_manual_identities(qc, epsilon=1e-6):
     """
     Convert non-Clifford+T gates to Clifford+T using gridsynth.
     
@@ -1026,6 +1027,76 @@ def apply_manual_identities(qc, epsilon=1e-10):
     return new_qc
 
 
+def adaptive_clifford_t_approximation(qc_rz, U_target, min_fidelity=0.98, max_t=250, max_total_gates=6000,
+                                     epsilons=(1e-10, 1e-8, 1e-6, 1e-4, 1e-3, 1e-2),
+                                     effort=3, decoder="ml-exact", verbose=True):
+    """
+    Convert an {rz,cx,h}-basis circuit into Clifford+T using gridsynth, but adapt the
+    gridsynth approximation tolerance to avoid absurd T-count blow-ups.
+
+    Strategy:
+      - Try a ladder of epsilons (coarse -> fewer T gates).
+      - For each epsilon: apply_manual_identities -> optimize passes -> optional rmsynth on diagonal chunks.
+      - Pick the smallest T-count circuit that still meets min_fidelity.
+      - If none meet min_fidelity, return the best-fidelity candidate (tie-break by T-count).
+    """
+    # Ensure target is a proper unitary (numerically)
+    try:
+        U_clean, _ = polar(U_target)
+    except Exception:
+        U_clean = U_target
+
+    best_meeting = None
+    best_meeting_metrics = None  # (t_count, total_gates, -fid)
+
+    best_overall = None
+    best_overall_metrics = None  # (-fid, t_count, total_gates)
+
+    for eps in epsilons:
+        cand = apply_manual_identities(qc_rz, epsilon=eps)
+        cand = optimize_circuit(cand)
+
+        # rmsynth only helps on diagonal (CNOT+phase) chunks; safe even if it does nothing
+        try:
+            cand = optimize_diagonal_chunks_with_rmsynth(cand, effort=effort, decoder=decoder)
+        except Exception:
+            pass
+
+        try:
+            fid = float(process_fidelity(Operator(U_clean), Operator(cand)))
+        except Exception:
+            # Fallback: compute via trace overlap
+            U_c = Operator(cand).data
+            d = U_c.shape[0]
+            fid = float(np.abs(np.trace(U_clean.conj().T @ U_c))**2 / (d * d))
+
+        counts = cand.count_ops()
+        t_count = int(counts.get('t', 0) + counts.get('tdg', 0))
+        total_gates = int(sum(counts.values()))
+
+        if verbose:
+            print(f"    [approx eps={eps:g}] fid={fid:.6f}, T={t_count}, total={total_gates}")
+
+        # Track best overall (highest fidelity, then fewer T, then fewer gates)
+        overall_key = (-fid, t_count, total_gates)
+        if best_overall is None or overall_key < best_overall_metrics:
+            best_overall = cand
+            best_overall_metrics = overall_key
+
+        # Track best meeting threshold with sane sizes
+        if fid >= min_fidelity and t_count <= max_t and total_gates <= max_total_gates:
+            meet_key = (t_count, total_gates, -fid)
+            if best_meeting is None or meet_key < best_meeting_metrics:
+                best_meeting = cand
+                best_meeting_metrics = meet_key
+
+    if best_meeting is not None:
+        return best_meeting
+
+    # If nothing meets threshold, return the highest-fidelity candidate (still usually much shorter than eps=1e-10)
+    return best_overall
+
+
 def optimize_diagonal_chunks_with_rmsynth(qc, effort=1, decoder="auto"):
     """
     Split circuit at H gates and optimize each diagonal chunk with rmsynth.
@@ -1081,8 +1152,6 @@ def decompose_and_optimize(U, effort=3):
         # Try pattern recognizers in order of efficiency
         recognizers = [
             ('controlled gate', lambda: recognize_controlled_gate(U)),
-            ('unitary9', lambda: recognize_unitary9(U)),
-            ('unitary10', lambda: recognize_unitary10(U)),
             ('unitary4', lambda: recognize_unitary4(U)),
             ('unitary7', lambda: recognize_unitary7(U)),
             ('QFT', lambda: recognize_qft2(U)),
@@ -1111,8 +1180,21 @@ def decompose_and_optimize(U, effort=3):
     
     # General QSD decomposition
     qc_qsd = qs_decomposition(U)
-    qc_t = transpile(qc_qsd, basis_gates=['rz', 'cx', 'h'], optimization_level=3)
-    return qc_t
+    qc_rz = transpile(qc_qsd, basis_gates=['rz', 'cx', 'h'], optimization_level=3)
+
+    # Convert to Clifford+T with adaptive gridsynth tolerance to avoid huge T blow-ups (notably U9/U10).
+    qc_ct = adaptive_clifford_t_approximation(
+        qc_rz,
+        U_target=U,
+        min_fidelity=0.98,
+        max_t=250,
+        max_total_gates=6000,
+        epsilons=(1e-10, 1e-8, 1e-6, 1e-4, 1e-3, 1e-2),
+        effort=effort,
+        decoder="ml-exact",
+        verbose=True,
+    )
+    return qc_ct
 
 
 def synthesize_diagonal_unitary(U, num_qubits):
@@ -1394,7 +1476,7 @@ def brute_force_search(U, max_t=3, max_cx=3, verbose=True, timeout=300, parallel
     start = time.time()
     total_count = 0
     
-    for n_cx in range(1, max_cx + 1):
+    for n_cx in range(0, max_cx + 1):
         if not parallel and time.time() - start > timeout:
             print(f"\nTimeout after {total_count} circuits")
             break
@@ -1450,7 +1532,7 @@ def brute_force_search(U, max_t=3, max_cx=3, verbose=True, timeout=300, parallel
     if best_gates:
         qc = _reconstruct_circuit(best_gates, best_cx_pat)
         print(f"\nBest: T={best_t}, fid={best_fid:.6f}")
-        print(qc.draw())
+        print(qc.draw('mpl'))
         return qc, best_fid
     
     return None, 0
@@ -1461,6 +1543,44 @@ def brute_force_parallel(U, max_t=3, max_cx=3, verbose=True, n_workers=None):
     """Parallel brute force search. Alias for brute_force_search(parallel=True)."""
     return brute_force_search(U, max_t=max_t, max_cx=max_cx, verbose=verbose,
                               parallel=True, n_workers=n_workers)
+
+
+# Progressive low-T search helper for U9/U10 etc.
+def progressive_low_t_search(U, t_cap=8, cx_cap=3, fid_target=1.0 - 1e-12, n_workers=None, verbose=False):
+    """Progressively search for the lowest-T 2-qubit Clifford+T circuit.
+
+    This is designed for cases like U9/U10 where generic decomposition + gridsynth
+    can explode the T-count even when an exact low-T circuit exists.
+
+    Returns:
+        (qc, fid, t_used) where t_used is the T budget that first achieved fid_target.
+    """
+    U_clean, _ = polar(U)
+
+    best_qc = None
+    best_fid = 0.0
+    best_t = None
+
+    for t in range(0, t_cap + 1):
+        qc, fid = brute_force_search(
+            U_clean,
+            max_t=t,
+            max_cx=cx_cap,
+            verbose=verbose,
+            parallel=True,
+            n_workers=n_workers,
+        )
+
+        if qc is not None and fid > best_fid:
+            best_qc, best_fid, best_t = qc, fid, t
+
+        if qc is not None and fid >= fid_target:
+            return qc, fid, t
+
+    if best_qc is not None:
+        return best_qc, best_fid, best_t
+
+    return None, 0.0, None
 
 
 def quick_search(U, max_t=2):
@@ -1504,13 +1624,19 @@ def optimize_and_display(name, filepath, effort=3, verbose=False, use_brute_forc
         f = io.StringIO()
         with redirect_stdout(f):
             qc = decompose_and_optimize(U_target, effort)
-            qc = apply_manual_identities(qc, epsilon=1e-10)
+            # decompose_and_optimize() already returns Clifford+T after adaptive synthesis.
+            # Only run manual identities if any non-basis rotations slipped through.
+            if any(inst.operation.name in ("rx", "ry", "rz", "x", "y") for inst in qc.data):
+                qc = apply_manual_identities(qc, epsilon=1e-6)
             qc = optimize_circuit(qc)
             qc = optimize_diagonal_chunks_with_rmsynth(qc, effort=effort, decoder="auto")
             qc = optimize_circuit(qc)
     else:
         qc = decompose_and_optimize(U_target, effort)
-        qc = apply_manual_identities(qc, epsilon=1e-10)
+        # decompose_and_optimize() already returns Clifford+T after adaptive synthesis.
+        # Only run manual identities if any non-basis rotations slipped through.
+        if any(inst.operation.name in ("rx", "ry", "rz", "x", "y") for inst in qc.data):
+            qc = apply_manual_identities(qc, epsilon=1e-6)
         qc = optimize_circuit(qc)
         qc = optimize_diagonal_chunks_with_rmsynth(qc, effort=effort, decoder="auto")
         qc = optimize_circuit(qc)
@@ -1530,7 +1656,59 @@ def optimize_and_display(name, filepath, effort=3, verbose=False, use_brute_forc
     best_qc = qc
     best_fid = fid
     method_used = "Standard optimizer"
-    
+
+    # If we got an absurd T-count (common for U9/U10), try a progressive low-T exact search.
+    # This targets the *minimum T* solution that hits essentially-unit fidelity.
+    if n_qubits == 2 and (t_count > 50 or "Unitary 9" in name or "Unitary 10" in name or "unitary9" in filepath or "unitary10" in filepath):
+        print("\n  [Trying progressive low-T search to reduce T-count]")
+        try:
+            # Suppress brute-force logs unless user explicitly requested verbose.
+            if not verbose:
+                import io
+                from contextlib import redirect_stdout
+                with redirect_stdout(io.StringIO()):
+                    bf_qc, bf_fid, bf_t = progressive_low_t_search(
+                        U_target,
+                        t_cap=8,
+                        cx_cap=3,
+                        fid_target=1.0 - 1e-12,
+                        n_workers=os.cpu_count(),
+                        verbose=False,
+                    )
+            else:
+                bf_qc, bf_fid, bf_t = progressive_low_t_search(
+                    U_target,
+                    t_cap=8,
+                    cx_cap=3,
+                    fid_target=1.0 - 1e-12,
+                    n_workers=os.cpu_count(),
+                    verbose=True,
+                )
+
+            if bf_qc is not None:
+                # Phase align brute-force result
+                bf_U = Operator(bf_qc).data
+                bf_phase = np.angle(np.trace(np.conj(U_target.T) @ bf_U))
+                bf_qc.global_phase = -bf_phase
+
+                bf_ops = bf_qc.count_ops()
+                bf_t_count = bf_ops.get('t', 0) + bf_ops.get('tdg', 0)
+                bf_dist = np.linalg.norm(U_target - Operator(bf_qc).data, ord=2)
+                bf_fid2 = process_fidelity(Operator(U_target), Operator(bf_qc))
+
+                # Prefer strictly fewer T; tie-break on smaller distance.
+                if bf_t_count < t_count or (bf_t_count == t_count and bf_dist < dist):
+                    best_qc = bf_qc
+                    best_fid = bf_fid2
+                    method_used = f"Progressive brute force (T={bf_t_count})"
+                    # Update the local metrics used by later heuristics
+                    ops = bf_ops
+                    t_count = bf_t_count
+                    dist = bf_dist
+                    fid = bf_fid2
+        except Exception as e:
+            print(f"  [Progressive low-T search failed: {e}]")
+
     # Try brute force if fidelity is below threshold (only for 2-qubit unitaries)
     if use_brute_force and fid < fidelity_threshold and n_qubits == 2:
         print(f"\n  [Trying brute force search - fidelity {fid:.4f} < {fidelity_threshold}]")

@@ -1,0 +1,67 @@
+*** Begin Patch
+*** Update File: optimize_unitaries.py
+@@
+-def brute_force_search(U, max_t=3, max_cx=3, verbose=True, timeout=300, parallel=False, n_workers=None):
++def brute_force_search(U, max_t=3, max_cx=3, verbose=True, timeout=60, parallel=False, n_workers=None):
+@@
+-def progressive_low_t_search(U, t_cap=8, cx_cap=3, fid_target=1.0 - 1e-12, n_workers=None, verbose=False):
++def progressive_low_t_search(U, t_cap=6, cx_cap=2, fid_target=1.0 - 1e-12, per_t_timeout=15, n_workers=None, verbose=False):
+     """Progressively search for the lowest-T 2-qubit Clifford+T circuit.
+@@
+     best_qc = None
+     best_fid = 0.0
+     best_t = None
+ 
+     for t in range(0, t_cap + 1):
++        # Keep early rounds extremely small. If an exact low-T solution exists,
++        # it almost always appears with CX<=2. Expand slightly only for larger T.
++        local_cx_cap = cx_cap if t <= 4 else max(cx_cap, 3)
+         qc, fid = brute_force_search(
+             U_clean,
+             max_t=t,
+-            max_cx=cx_cap,
++            max_cx=local_cx_cap,
+             verbose=verbose,
+-            parallel=True,
+-            n_workers=n_workers,
++            timeout=per_t_timeout,
++            parallel=False,
++            n_workers=None,
+         )
+@@
+-                    bf_qc, bf_fid, bf_t = progressive_low_t_search(
+-                        U_target,
+-                        t_cap=8,
+-                        cx_cap=3,
+-                        fid_target=1.0 - 1e-12,
+-                        n_workers=os.cpu_count(),
+-                        verbose=False,
+-                    )
++                    bf_qc, bf_fid, bf_t = progressive_low_t_search(
++                        U_target,
++                        t_cap=6,
++                        cx_cap=2,
++                        fid_target=1.0 - 1e-12,
++                        per_t_timeout=15,
++                        n_workers=None,
++                        verbose=False,
++                    )
+             else:
+-                bf_qc, bf_fid, bf_t = progressive_low_t_search(
+-                    U_target,
+-                    t_cap=8,
+-                    cx_cap=3,
+-                    fid_target=1.0 - 1e-12,
+-                    n_workers=os.cpu_count(),
+-                    verbose=True,
+-                )
++                bf_qc, bf_fid, bf_t = progressive_low_t_search(
++                    U_target,
++                    t_cap=6,
++                    cx_cap=2,
++                    fid_target=1.0 - 1e-12,
++                    per_t_timeout=15,
++                    n_workers=None,
++                    verbose=True,
++                )
+*** End Patch
