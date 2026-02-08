@@ -1,34 +1,67 @@
-# iQuHACK-2025: Alice & Bob Quantum Challenge
+# iQuHACK-2026: Clifford+T Circuit Optimization Challenge
 
-This repository is the home for the iQuHACK 2025 Alice & Bob challenge, focused on simulating and controlling cat qubits in open quantum systems. 
+This repository is the home for the iQuHACK 2026 Clifford+T circuit optimization challenge, focused on pushing the limits of quantum circuit efficiency using advanced synthesis and decoding techniques. 
 
 ## Features
 
-- **Cat Qubit Stabilization & Analysis:** Simulate a cat qubit stabilized by two-photon dissipation, build composite Hilbert spaces, and analyze quantum state evolution using the `dynamiqs` library and JAX.
-- **Lab Frame Simulation & Hamiltonian Engineering:** Model quantum systems in the lab frame, engineer time-dependent Hamiltonians (including SQUID and drive terms), and visualize results.
-- **Open Quantum System Simulation:** Solve the Lindblad master equation, compare simulation approaches, and implement advanced gates and optimal control.
-- **Visualization:** Generate plots and animations (Wigner functions, expectation values) to interpret quantum state evolution.
+- **Clifford+T Circuit Optimization:**
+   - Minimize T-gate count in quantum circuits using pattern recognition, brute-force search, and phase polynomial optimization.
+   - Recognize and optimize common 2-qubit unitaries (QFT, Heisenberg, etc.).
+   - Integrate with the `rmsynth` toolkit for deep T-count and T-depth reduction.
+   - Use both command-line tools and a Python API for flexible workflows.
+
+- **rmsynth Toolkit:**
+   - Resource-optimization for Clifford+T circuits via phase polynomial methods and punctured Reed–Muller decoding.
+   - Multiple decoding backends (Dumer, RPA, OSD, etc.), depth-aware optimization, and autotuning.
+   - Python API and CLI, with a C++ backend for high performance.
+
+- **Notebooks & Datasets:**
+   - Jupyter notebook for step-by-step optimization and visualization of 11 challenge unitaries.
+   - Example datasets and QASM outputs for benchmarking and analysis.
+
+- **Papers & References:**
+   - A curated collection of foundational papers on T-count optimization, Reed–Muller codes, and quantum circuit synthesis.
 
 ## How to Use This Repository
 
 1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Valmohaugen/iQuHack-2025.git
-   cd iQuHack-2025
-   ```
-2. **Open the challenge notebooks:**
-   - Use Jupyter Notebook or VS Code to open `Challenge 1.ipynb` and `Challenge 2.ipynb`.
-3. **Consult Resources:**
-   - The `Resources` file contains background reading and helpful links (e.g., [iQuHACK 2025 Alice & Bob](https://github.com/iQuHACK/2025-Alice-and-Bob)).
-4. Make sure you have Python, Jupyter, and the required packages (`dynamiqs`, `jax`, `matplotlib`, `numpy`, `scipy`).
-   - If you use additional packages, list them in your `requirements.txt` and kernel.
+    ```bash
+    git clone https://github.com/Valmohaugen/iQuHack-2026.git
+    cd iQuHack-2026
+    ```
+2. **Set up your environment:**
+    - Install Python 3.11+ (conda recommended)
+    - Run the setup script or install requirements:
+       ```bash
+       conda create -n mit26 python=3.11
+       conda activate mit26
+       pip install -r rmsynth/requirements.txt
+       pip install -r requirements.txt
+       python -m pip install -e rmsynth/
+       ```
+    - Required packages: `qiskit`, `pygridsynth`, `numpy`, `matplotlib`, `mpmath`, `pandas`, and more (see requirements files)
+3. **Optimize a unitary (command line):**
+    ```bash
+    python optimize_unitaries.py unitary1.npy unitary1_optimized.qasm --effort 3
+    ```
+4. **Explore interactively:**
+    - Open `optimize_unitaries.ipynb` in Jupyter or VS Code
+    - Run through the cells to see the optimization pipeline, visualize results, and compare methods
+5. **Use the Python API:**
+    ```python
+    from optimize_unitaries import load_unitary, decompose_and_optimize
+    U = load_unitary("unitary1.npy")
+    qc = decompose_and_optimize(U, effort=3)
+    ```
+6. **Consult the `rmsynth` subfolder for advanced optimization, API docs, and implementation details.**
 
 ## Results
 
 Running the project end-to-end, you will:
 
-- Simulate and visualize the stabilization of a cat qubit, including photon number, parity, and Wigner function evolution.
-- Engineer and analyze lab-frame Hamiltonians, producing animations and insights into quantum state dynamics.
-- Compare simulation methods, implement gates, and apply optimal control.
-- **Dependencies:**
-   - Ensure you have Python, Jupyter, and required packages (e.g., `dynamiqs`, `jax`, `matplotlib`, `numpy`, `scipy`) installed.
+- Optimize all 11 challenge unitaries to Clifford+T circuits with minimized T-count and high fidelity.
+- Generate QASM outputs and compare resource usage (T-count, CX-count, depth).
+- Visualize circuit structure and performance in the notebook.
+- Leverage state-of-the-art Reed–Muller decoding to push the limits of quantum circuit efficiency.
+**Dependencies:**
+   - Python 3.11+, Jupyter, Qiskit, pygridsynth, numpy, matplotlib, mpmath, pandas, and a C++17 compiler for rmsynth
