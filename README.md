@@ -63,5 +63,6 @@ Running the project end-to-end, you will:
 - Generate QASM outputs and compare resource usage (T-count, CX-count, depth).
 - Visualize circuit structure and performance in the notebook.
 - Leverage state-of-the-art Reed–Muller decoding to push the limits of quantum circuit efficiency.
+
 **Dependencies:**
    - Python 3.11+, Jupyter, Qiskit, pygridsynth, numpy, matplotlib, mpmath, pandas, and a C++17 compiler for rmsynth
