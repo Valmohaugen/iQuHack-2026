@@ -14,12 +14,12 @@ Features:
 Usage:
 ------
 Command line:
-    python optimize_unitary.py input.npy output.qasm --effort 3
+    python optimize_unitaries.py data/unitaries/unitary1.npy data/results/output.qasm --effort 3
 
 Python API:
-    from optimize_unitary import load_unitary, decompose_and_optimize, analyze_unitary
-    
-    U = load_unitary("unitary1.npy")
+    from optimize_unitaries import load_unitary, decompose_and_optimize, analyze_unitary
+
+    U = load_unitary("data/unitaries/unitary1.npy")
     qc = decompose_and_optimize(U, effort=3)
     
     # Or analyze first
@@ -68,6 +68,10 @@ from rmsynth.core import (
 # =============================================================================
 
 RMSYNTH_CMD = "rmsynth-optimize"
+
+# Directories for input data and output results
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "unitaries")
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "results")
 
 
 # =============================================================================
@@ -1762,16 +1766,16 @@ def check_existing_solution(i):
     Returns:
         tuple: (circuit, fidelity, t_count) or (None, 0, 0) if not found
     """
-    qasm_file = f'unitary{i}_optimized.qasm'
+    qasm_file = os.path.join(RESULTS_DIR, f'unitary{i}_optimized.qasm')
     if not os.path.exists(qasm_file):
         return None, 0, 0
-    
+
     try:
         with open(qasm_file) as f:
             qasm_str = f.read()
         qc = QuantumCircuit.from_qasm_str(qasm_str)
-        
-        U = np.load(f'unitary{i}.npy')
+
+        U = np.load(os.path.join(DATA_DIR, f'unitary{i}.npy'))
         U_clean, _ = polar(U)
         
         fid = process_fidelity(Operator(U_clean), Operator(qc))
@@ -1802,8 +1806,8 @@ def optimize_hard_unitary(i, max_t=7, max_cx=3, n_workers=4):
     print(f"\n{'='*60}")
     print(f"Optimizing Unitary {i} (hard case)")
     print(f"{'='*60}")
-    
-    U = np.load(f'unitary{i}.npy')
+
+    U = np.load(os.path.join(DATA_DIR, f'unitary{i}.npy'))
     U_clean, _ = polar(U)
     
     results = []
@@ -1863,7 +1867,7 @@ def run_batch(effort=3, verbose=False, use_brute_force=True, fidelity_threshold=
     
     for i in range(1, 12):
         name = f"Unitary {i}"
-        filepath = f"unitary{i}.npy"
+        filepath = os.path.join(DATA_DIR, f"unitary{i}.npy")
         if os.path.exists(filepath):
             qc, U = optimize_and_display(name, filepath, effort=effort, verbose=verbose,
                                          use_brute_force=use_brute_force, 
@@ -1980,7 +1984,7 @@ def run_hard_batch(hard_unitaries=None, max_t=7, max_cx=3, n_workers=4, fidelity
         
         if best_qc and best_fid > fidelity_threshold:
             qasm = qiskit.qasm2.dumps(best_qc)
-            with open(f'unitary{i}_optimized.qasm', 'w') as f:
+            with open(os.path.join(RESULTS_DIR, f'unitary{i}_optimized.qasm'), 'w') as f:
                 f.write(qasm)
             print(f"\n✅ U{i}: Saved with T={best_t}, Fid={best_fid:.4f}")
             summary.append((i, best_t, best_fid, 'SAVED'))
@@ -1989,7 +1993,7 @@ def run_hard_batch(hard_unitaries=None, max_t=7, max_cx=3, n_workers=4, fidelity
             print(f"\n⚠️ U{i}: Best found fid={fid_str} (keeping as approximate)")
             if best_qc:
                 qasm = qiskit.qasm2.dumps(best_qc)
-                with open(f'unitary{i}_optimized.qasm', 'w') as f:
+                with open(os.path.join(RESULTS_DIR, f'unitary{i}_optimized.qasm'), 'w') as f:
                     f.write(qasm)
                 summary.append((i, best_t, best_fid, 'APPROXIMATE'))
             else:
@@ -2017,21 +2021,21 @@ def main():
         epilog="""
 Examples:
   # Single file optimization:
-  python optimize_unitaries.py unitary1.npy output.qasm --effort 3
-  python optimize_unitaries.py unitary7.npy output.qasm --effort 3 --decoder ml-exact
-  
+  python optimize_unitaries.py data/unitaries/unitary1.npy data/results/output.qasm --effort 3
+  python optimize_unitaries.py data/unitaries/unitary7.npy data/results/output.qasm --effort 3 --decoder ml-exact
+
   # Batch mode (process all 11 unitaries):
   python optimize_unitaries.py --batch
   python optimize_unitaries.py --batch --effort 3 --no-brute-force
-  
+
   # Hard mode (brute force search on specific hard unitaries):
   python optimize_unitaries.py --hard                    # Default: U6, U7, U10
   python optimize_unitaries.py --hard 6 7 9 10          # Specify which unitaries
   python optimize_unitaries.py --hard --max-t 5 --max-cx 2
-  
+
   # Challenge 12 (commuting Pauli terms, NO S gates!):
   python optimize_unitaries.py --challenge12
-  python optimize_unitaries.py --challenge12 --json custom.json --output custom.qasm
+  python optimize_unitaries.py --challenge12 --json data/unitaries/custom.json --output data/results/custom.qasm
         """
     )
     parser.add_argument("input_file", nargs='?', help="Input unitary file (.npy or .txt)")
@@ -2042,10 +2046,10 @@ Examples:
                         help="Run heavy brute force optimization on hard unitaries (default: 6 7 10)")
     parser.add_argument("--challenge12", action="store_true",
                         help="Run Challenge 12 optimization (commuting Paulis, NO S gates!)")
-    parser.add_argument("--json", type=str, default="challenge12.json",
-                        help="JSON file for Challenge 12 (default: challenge12.json)")
-    parser.add_argument("--output", type=str, default="challenge12_optimized.qasm",
-                        help="Output file for Challenge 12 (default: challenge12_optimized.qasm)")
+    parser.add_argument("--json", type=str, default=os.path.join(DATA_DIR, "unitary12.json"),
+                        help="JSON file for Challenge 12 (default: data/unitaries/unitary12.json)")
+    parser.add_argument("--output", type=str, default=os.path.join(RESULTS_DIR, "unitary12_optimized.qasm"),
+                        help="Output file for Challenge 12 (default: data/results/unitary12_optimized.qasm)")
     parser.add_argument("--max-t", type=int, default=7, 
                         help="Maximum T-gate count for hard search (default=7)")
     parser.add_argument("--max-cx", type=int, default=3, 
@@ -2355,17 +2359,19 @@ def synthesize_diagonal_z_rotation(z_str, k, n_qubits):
     return qc
 
 
-def optimize_challenge12_per_term_diag(data, output_file="challenge12_perterm_diag.qasm", verbose=True):
+def optimize_challenge12_per_term_diag(data, output_file=None, verbose=True):
     """
     Optimize Challenge 12 using per-term diagonalization.
-    
+
     For each Pauli term:
     1. Apply basis change circuit C to diagonalize (X->Z via H, Y->Z via SdgH)
     2. Apply diagonal Z rotation
     3. Apply inverse basis change C†
-    
+
     This is equivalent to the direct synthesis but structured differently.
     """
+    if output_file is None:
+        output_file = os.path.join(RESULTS_DIR, "challenge12_perterm_diag.qasm")
     n = data['n']
     terms = data['terms']
     
@@ -2509,16 +2515,16 @@ def optimize_diagonal_with_rmsynth_no_s(qc, n_qubits):
     return new_qc
 
 
-def optimize_challenge12_diagonalization(data, output_file="challenge12_diag_optimized.qasm", verbose=True):
+def optimize_challenge12_diagonalization(data, output_file=None, verbose=True):
     """
     Optimize Challenge 12 using Clifford Diagonalization + rmsynth.
-    
+
     Strategy:
     1. Find Clifford C that diagonalizes all Paulis to Z-strings
     2. Build diagonal phase polynomial circuit
     3. Optimize with rmsynth
     4. Final circuit: C† @ optimized_diagonal @ C
-    
+
     NO S GATES ALLOWED - only {H, T, Tdg, CX}!
     
     Args:
@@ -2529,9 +2535,11 @@ def optimize_challenge12_diagonalization(data, output_file="challenge12_diag_opt
     Returns:
         tuple: (circuit, t_count, fidelity)
     """
+    if output_file is None:
+        output_file = os.path.join(RESULTS_DIR, "challenge12_diag_optimized.qasm")
     n = data['n']
     terms = data['terms']
-    
+
     if verbose:
         print(f"\n{'='*60}")
         print("CHALLENGE 12: DIAGONALIZATION METHOD")
@@ -2633,16 +2641,18 @@ def optimize_challenge12_diagonalization(data, output_file="challenge12_diag_opt
     return final_qc, t_count, fid
 
 
-def load_challenge12(filepath="challenge12.json"):
+def load_challenge12(filepath=None):
     """
     Load Challenge 12 JSON file containing commuting Pauli terms.
-    
+
     Args:
-        filepath: Path to challenge12.json
-        
+        filepath: Path to challenge12.json (default: data/unitaries/unitary12.json)
+
     Returns:
         dict with keys: n (qubits), terms (list of {pauli, k})
     """
+    if filepath is None:
+        filepath = os.path.join(DATA_DIR, "unitary12.json")
     with open(filepath) as f:
         data = json.load(f)
     return data
@@ -2881,20 +2891,22 @@ def simplify_circuit_no_s(qc):
     return new_qc
 
 
-def optimize_challenge12(data, output_file="challenge12_optimized.qasm", verbose=True):
+def optimize_challenge12(data, output_file=None, verbose=True):
     """
     Optimize Challenge 12: Commuting Pauli Phase Program.
-    
+
     NO S GATES ALLOWED - only {H, T, Tdg, CX}!
-    
+
     Args:
         data: Challenge 12 data dict
-        output_file: Output QASM file path
+        output_file: Output QASM file path (default: data/results/challenge12_optimized.qasm)
         verbose: Print progress
-        
+
     Returns:
         tuple: (circuit, t_count, fidelity)
     """
+    if output_file is None:
+        output_file = os.path.join(RESULTS_DIR, "challenge12_optimized.qasm")
     n = data['n']
     terms = data['terms']
     
@@ -3012,23 +3024,27 @@ def optimize_challenge12(data, output_file="challenge12_optimized.qasm", verbose
     return qc, t_count, fid
 
 
-def run_challenge12(json_file="unitary12.json", output_file="unitary12_optimized.qasm", method="direct"):
+def run_challenge12(json_file=None, output_file=None, method="direct"):
     """
     Run Challenge 12 optimization from command line.
-    
+
     Args:
-        json_file: Input JSON file with Pauli terms (default: unitary12.json)
-        output_file: Output QASM file path
+        json_file: Input JSON file with Pauli terms (default: data/unitaries/unitary12.json)
+        output_file: Output QASM file path (default: data/results/unitary12_optimized.qasm)
         method: Synthesis method - "direct" (recommended), "diag", or "best" (try both)
-    
+
     Usage:
         python optimize_unitaries.py --challenge12
         python optimize_unitaries.py --challenge12 --method diag
         python optimize_unitaries.py --challenge12 --json custom.json --output custom.qasm
     """
+    if json_file is None:
+        json_file = os.path.join(DATA_DIR, "unitary12.json")
+    if output_file is None:
+        output_file = os.path.join(RESULTS_DIR, "unitary12_optimized.qasm")
     if not os.path.exists(json_file):
         print(f"Error: {json_file} not found!")
-        print("Please provide the unitary12.json file.")
+        print("Please provide the unitary12.json file in data/unitaries/.")
         return None
     
     data = load_challenge12(json_file)

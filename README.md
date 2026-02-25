@@ -20,11 +20,27 @@ This repository is the home for the iQuHACK 2026 Superquantum challenge, focused
 * **Notebooks & Datasets:**
 
   * Jupyter notebook for step-by-step optimization and visualization of the 11 challenge unitaries.
-  * Example unitary inputs and QASM outputs for benchmarking, comparison, and regression testing.
+  * Example unitary inputs (`data/unitaries/`) and optimized QASM outputs (`data/results/`) for benchmarking, comparison, and regression testing.
 
 * **Papers & References:**
 
   * A curated collection of foundational papers on T-count optimization, Reed–Muller codes, and modern quantum circuit synthesis methods.
+
+## Project Structure
+
+```
+iQuHack-2026/
+  optimize_unitaries.py      # Main optimization script (CLI + Python API)
+  optimize_unitaries.ipynb   # Interactive notebook for exploration
+  requirements.txt           # Python dependencies
+  setup.sh                   # Environment setup script
+  data/
+    unitaries/               # Input challenge unitaries (.npy, .json)
+    results/                 # Optimized output circuits (.qasm)
+  docs/                      # Team documentation and presentation
+  papers/                    # Reference papers on T-count optimization
+  rmsynth/                   # Reed-Muller decoding toolkit (C++ + Python)
+```
 
 ## How to Use This Repository
 
@@ -50,7 +66,7 @@ This repository is the home for the iQuHACK 2026 Superquantum challenge, focused
 3. **Optimize a unitary (command line):**
 
    ```bash
-   python optimize_unitaries.py unitary1.npy unitary1_optimized.qasm --effort 3
+   python optimize_unitaries.py data/unitaries/unitary1.npy data/results/unitary1_optimized.qasm --effort 3
    ```
 4. **Explore interactively:**
 
@@ -61,7 +77,7 @@ This repository is the home for the iQuHACK 2026 Superquantum challenge, focused
    ```python
    from optimize_unitaries import load_unitary, decompose_and_optimize
 
-   U = load_unitary("unitary1.npy")
+   U = load_unitary("data/unitaries/unitary1.npy")
    qc = decompose_and_optimize(U, effort=3)
    ```
 6. **Dig into `rmsynth/` for advanced optimization:**
@@ -73,7 +89,7 @@ This repository is the home for the iQuHACK 2026 Superquantum challenge, focused
 Running the project end-to-end, you will:
 
 * Optimize all 11 challenge unitaries to Clifford+T circuits with minimized T-count and high fidelity.
-* Generate QASM outputs and compare resource usage (T-count, CX-count, depth) across approaches and effort settings.
+* Generate QASM outputs in `data/results/` and compare resource usage (T-count, CX-count, depth) across approaches and effort settings.
 * Visualize circuit structure and performance in the notebook.
 * Leverage Reed–Muller decoding–based synthesis to push circuit efficiency beyond straightforward decompositions.
 

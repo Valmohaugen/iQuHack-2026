@@ -1,4 +1,4 @@
-!/bin/bash
+#!/bin/bash
 
 conda create -n mit26 python=3.11
 conda activate mit26
